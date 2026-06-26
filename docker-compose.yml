@@ -1,0 +1,90 @@
+version: "3.9"
+
+# =============================================================================
+# docker-compose.yml — Trading Recommender Bot
+# =============================================================================
+# Secrets strategy:
+#   • Secrets live in .env (gitignored) and are injected as Docker env vars.
+#   • .NET reads them via AddEnvironmentVariables(prefix: "TRADINGBOT_").
+#   • Double-underscore maps to JSON nesting:
+#     TRADINGBOT__Database__ConnectionString → "Database:ConnectionString"
+#     TRADINGBOT__TradingSettings__GoApi__ApiKey → "TradingSettings:GoApi:ApiKey"
+#
+# Run:
+#   cp .env.example .env   # edit values
+#   docker compose up -d
+# =============================================================================
+
+services:
+  tradingbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trading-recommender-bot:latest
+    container_name: tradingbot
+    restart: unless-stopped
+
+    # Network & storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    # Secrets injected from host .env file (NEVER committed)
+    # .NET config reads TRADINGBOT__Database__ConnectionString → "Database:ConnectionString"
+    environment:
+      # Database — flat key
+      TRADINGBOT__Database__ConnectionString: "Host=postgres;Port=5432;Database=trading_recommender;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+
+      # TradingSettings sub-section
+      TRADINGBOT__TradingSettings__GoApi__ApiKey: "${GOAPI_API_KEY}"
+      TRADINGBOT__TradingSettings__Telegram__BotToken: "${TELEGRAM_BOT_TOKEN}"
+      TRADINGBOT__TradingSettings__Telegram__ChatId: "${TELEGRAM_CHAT_ID}"
+
+      # Timezone for Quartz
+      TZ: Asia/Jakarta
+      TRADINGBOT__Logging__LogLevel__Default: Information
+
+    # Sensible defaults — log file inside container, easy to docker cp
+    volumes:
+      - ./logs:/app/logs
+
+    # Run with read-only filesystem where possible
+    read_only: false   # Quartz needs write access to /tmp for serialization
+    tmpfs:
+      - /tmp:size=64m
+
+    security_opt:
+      - no-new-privileges:true
+
+    # Health-check via Quartz admin (optional — turn on if you expose an HTTP endpoint)
+    # healthcheck:
+    #   test: ["CMD-SHELL", "dotnet --info"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tradingbot-db
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: trading_recommender
+
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d trading_recommender"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  pgdata:
+    driver: local
